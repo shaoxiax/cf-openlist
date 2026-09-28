@@ -674,15 +674,19 @@ function resolveFsGetType(item: any, provider: string): number {
   // 目录：直接 GetFileType(目录名)
   if (isDir) return calcFileType(name, false)
 
-  // 非目录：仅 139 系驱动会返回 cas_preview_name（对齐 CASPreviewNamer）
+  // 非目录：实现 CASPreviewNamer 的驱动会返回 cas_preview_name
+  // （139 系 与 189 天翼云盘）
   const providerNorm = String(provider || "")
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "")
-  const is139 =
+  const isCasCapable =
     providerNorm === "139" ||
     providerNorm === "yun139" ||
-    providerNorm === "139yun"
-  const typeName = is139 && item?.cas_preview_name
+    providerNorm === "139yun" ||
+    providerNorm === "189" ||
+    providerNorm === "189cloud" ||
+    providerNorm === "cloud189"
+  const typeName = isCasCapable && item?.cas_preview_name
     ? String(item.cas_preview_name)
     : name
   return calcFileType(typeName, false)

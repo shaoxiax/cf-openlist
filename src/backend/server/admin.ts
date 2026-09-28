@@ -1520,6 +1520,62 @@ const driverConfigs: Record<string, any> = {
         default: "desc",
         required: false,
       },
+      // ── CAS：播放 ────────────────────────────────────────────────────
+      // ⚠️ CF Workers 版只提供 CAS **消费侧**（读 .cas → 秒传恢复 → 直链播放）。
+      //    生成侧（rapid_upload / generate_cas / delete_source /
+      //    restore_source_from_cas）一律不做 —— Workers 搬不动本地大文件，
+      //    put() 只处理几百字节~几 MB 的 STRM/小文本，秒传收益≈0。
+      //    生成 .cas 请用独立搬运器 casgen（:5002）。
+      {
+        name: "cas_play_enabled",
+        type: "bool",
+        default: "true",
+        required: false,
+        help: "播放/下载 .cas 占位文件时，自动秒传恢复出真实文件（天翼云盘 CAS 功能总开关）",
+      },
+      {
+        name: "cas_auto_cleanup",
+        type: "bool",
+        default: "true",
+        required: false,
+        help: "播放结束后自动清理 TEMP 目录里的临时副本",
+      },
+      {
+        name: "cas_ext_allowlist",
+        type: "string",
+        default: "",
+        required: false,
+        help: "CAS 扩展名白名单，空为全部允许。示例：mp4,mkv,iso,zip",
+      },
+      {
+        name: "cas_download_restore",
+        type: "bool",
+        default: "false",
+        required: false,
+        help: "下载 .cas 时也恢复并返回真实文件（关闭时只对视频扩展名生效）",
+      },
+      // ── CAS：自动恢复（消费侧配套，只删不上传，CF 版可行）──────────────
+      {
+        name: "delete_cas_after_restore",
+        type: "bool",
+        default: "false",
+        required: false,
+        help: "恢复出源文件后删除对应的 .cas 占位文件",
+      },
+      {
+        name: "auto_restore_existing_cas",
+        type: "bool",
+        default: "false",
+        required: false,
+        help: "自动扫描下方监控目录，恢复其中的 .cas 文件（订阅后自动出片）",
+      },
+      {
+        name: "auto_restore_existing_cas_paths",
+        type: "text",
+        default: "",
+        required: false,
+        help: "每行一个目录路径（含子目录）；留空则不监控",
+      },
     ],
     config: {
       name: "189Cloud",

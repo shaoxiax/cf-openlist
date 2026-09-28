@@ -8,6 +8,7 @@ import {
   AppConfResp189,
   EncryptConfResp189,
   InitMultiUploadResp189,
+  CommitMultiUploadResp189,
   UploadPart189,
   UploadUrlsResp189,
 } from "./types"
@@ -902,6 +903,75 @@ export class Pan189Client {
       lazyCheck: "1",
       opertype: "3",
     })
+  }
+
+  /* ────────────────────────────────────────────────────────────────────── *
+   * CAS 秒传恢复（专供 cas/ 模块使用）
+   * ────────────────────────────────────────────────────────────────────── */
+
+  /**
+   * 申请秒传会话：带上 MD5/sliceMd5，云端据此判断是否已存在该内容。
+   *
+   * 与 `createMultiUpload`（真上传用）的关键差异：
+   *   - **不传 `lazyCheck`**：秒传必须让云端做 hash 校验，跳过校验就永远
+   *     拿不到 `fileDataExists=1`；
+   *   - **不做 black list 降级重试**：秒传场景若被安全策略拦下，说明这份
+   *     内容不允许秒传，降级重试只会拿到一个必然失败的会话。
+   *
+   * ⚠️ `fileDataExists` 是本功能成立的分水岭，调用方必须检查。
+   */
+  async initRapidUpload(opts: {
+    parentFolderId: string
+    fileName: string
+    fileSize: number
+    fileMd5: string
+    sliceMd5: string
+    sliceSize?: number
+  }): Promise<{ uploadFileId: string; fileDataExists: boolean }> {
+    const response = await this.uploadRequest<InitMultiUploadResp189>(
+      "/person/initMultiUpload",
+      {
+        parentFolderId: opts.parentFolderId,
+        fileName: encodeURIComponent(opts.fileName).replace(/%20/g, "+"),
+        fileSize: String(opts.fileSize),
+        sliceSize: String(opts.sliceSize || 10 * 1024 * 1024),
+        fileMd5: opts.fileMd5,
+        sliceMd5: opts.sliceMd5,
+      },
+    )
+    const uploadFileId = String(response.data?.uploadFileId || "")
+    if (!uploadFileId) {
+      throw new Error("[189Cloud] 申请秒传会话失败：缺少 uploadFileId")
+    }
+    return {
+      uploadFileId,
+      fileDataExists: String(response.data?.fileDataExists || "0") === "1",
+    }
+  }
+
+  /**
+   * 提交秒传，文件即出现在目标目录。
+   *
+   * @param opertype `3` = 覆盖同名文件，`1` = 保留两者（自动重命名）
+   */
+  async commitRapidUpload(
+    uploadFileId: string,
+    opertype = "1",
+  ): Promise<{ fileId: string; fileName: string }> {
+    const response = await this.uploadRequest<CommitMultiUploadResp189>(
+      "/person/commitMultiUploadFile",
+      {
+        uploadFileId,
+        opertype,
+        isLog: "0",
+      },
+    )
+    // 不同版本返回结构略有差异，逐层兼容
+    const d: any = response?.data || response || {}
+    return {
+      fileId: String(d.fileId ?? d.id ?? ""),
+      fileName: String(d.fileName ?? d.name ?? ""),
+    }
   }
 
   /**

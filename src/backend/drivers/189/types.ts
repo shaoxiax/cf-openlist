@@ -17,6 +17,26 @@ export interface Cloud189Addition {
   order_by?: "lastOpTime" | "filename" | "fileSize"
   /** 排序方向 */
   order_direction?: "asc" | "desc"
+
+  /* ── CAS 功能（对齐 Go 参考实现 drivers/189pc）───────────────────────── *
+   * ⚠️ CF Workers 版**只做消费侧**：读 .cas → 秒传恢复 → 直链播放。      *
+   *    生成侧（rapid_upload / generate_cas / delete_source /             *
+   *    restore_source_from_cas）已移除 —— Workers 搬不动本地大文件。     */
+
+  /** 播放 .cas 占位文件：秒传恢复 + 取直链 */
+  cas_play_enabled?: boolean
+  /** 播放后自动清理临时副本 */
+  cas_auto_cleanup?: boolean
+  /** CAS 扩展名白名单，空为全部允许。例：`mp4,mkv,iso,zip` */
+  cas_ext_allowlist?: string
+  /** 恢复源文件后删除 .cas 占位文件 */
+  delete_cas_after_restore?: boolean
+  /** 自动扫描目录恢复其中的 .cas 文件（后台任务） */
+  auto_restore_existing_cas?: boolean
+  /** 自动恢复的监控目录，每行一个；空为禁用 */
+  auto_restore_existing_cas_paths?: string
+  /** 下载 .cas 时恢复并返回真实文件（而非返回 .cas 元数据本身） */
+  cas_download_restore?: boolean
 }
 
 export interface FileItem189 {
@@ -130,4 +150,19 @@ export interface InitMultiUploadResp189 {
     uploadFileId?: string | number
     fileDataExists?: number | string
   }
+}
+
+/** 秒传提交的返回（字段名各版本不一，统一用可选兼容） */
+export interface CommitMultiUploadResp189 {
+  code?: string
+  data?: {
+    fileId?: string | number
+    id?: string | number
+    fileName?: string
+    name?: string
+  }
+  fileId?: string | number
+  id?: string | number
+  fileName?: string
+  name?: string
 }

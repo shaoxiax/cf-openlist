@@ -1,87 +1,107 @@
 // =============================================================================
-// OpenList-TSWorker · Cloudflare Workers 配置
-// 文档：https://developers.cloudflare.com/workers/wrangler/configuration/
+// cf-openlist · **网友自部署专用模板**
+// =============================================================================
 //
-// ⚠️ 本文件只声明 KV 一个存储绑定（见文件末 kv_namespaces），D1 / DO 等
-//    其它存储请按需在控制台添加。
+// ## 这是干什么的
 //
-// 为什么声明 KV 且【省略 id 字段】（不能写 "id": ""）：
-//   wrangler 会自动预配（automatic provisioning）：首次部署创建
-//   "项目名-绑定名" 的命名空间（此处即 openlist-tsworkers-kv）并绑定；
-//   二次部署通过服务端 inherit 复用已有绑定，不会重复创建。
+// 仓库里的 `wrangler.jsonc` 是**作者本人的生产配置**，里面写死了：
+//   - 作者自有的域名（routes.custom_domain）
+//   - 作者自有账号下的 KV 命名空间 id
 //
-// 注意：CI / 一键部署属非交互环境，wrangler 不会把生成的 id 回写进本文件。
-// 这是预期行为 —— 复用靠的是服务端 inherit 绑定，而非本地 id。
+// 你直接拿那份去部署**必然报错**：你没有那个域名，也访问不到那个 KV。
+// 所以自部署请用本文件。
 //
-// ⚠️ 不要用 `wrangler kv namespace create` 手动建名为 "KV" 的命名空间：
-//   wrangler 的预配链路无法按 title 复用已有命名空间（KVHandler 未实现
-//   isConnectedToExistingResource），它会另建 openlist-tsworkers-kv，
-//   手动建的那个不会被任何绑定使用，成为孤儿资源。参见 Issue #34。
+// ## 怎么用（三步）
 //
-// Secret（JWT_SECRET / ADMIN_PASS / ALLOW_URLS / MYSQL_URLS / EO_KV_URLS / CF_* 等）请在
-// .dev.vars.example 或 .env.example 中声明 —— 部署按钮据此生成输入项，
-// 用户填入的值会成为该 Worker 的 Secret，后续更新不会被覆盖。
+// ```bash
+// # 1. 克隆你自己的 fork
+// git clone https://github.com/<你的用户名>/cf-openlist.git
+// cd cf-openlist
+//
+// # 2. 用本模板覆盖 wrangler.jsonc（覆盖的是本地副本，不影响上游）
+// cp wrangler.template.jsonc wrangler.jsonc
+//
+// # 3. 改两处后部署（见下方 ★ 标记）
+// pnpm install --no-frozen-lockfile
+// pnpm run build          # 拉取前端 + 构建
+// pnpm run deploy:worker
+// ```
+//
+// ★ 需要你改的只有两处：
+//   - `"name"`                → 换成你想要的名字（全局唯一即可）
+//   - `"kv_namespaces"`       → **删掉整项**（见下方说明，wrangler 会自动创建）
+//
+// 想绑定自己的域名？再打开 `"routes"` 那一段的注释，把 pattern 换成你的域名。
+// 不需要自定义域名就**保持注释状态**，部署完直接用 `*.workers.dev` 访问。
+//
 // =============================================================================
 {
+  // ★ 改成你自己的 Worker 名。首次部署会以这个名字创建 Worker 与 KV。
   "name": "cf-openlist",
+
   "main": "src/backend/worker.ts",
   "compatibility_date": "2026-08-04",
   "compatibility_flags": ["nodejs_compat"],
-  "workers_dev": false,
+
+  // 是否开放 `<worker名>.<账号>.workers.dev` 访问。
+  // 没有自定义域名的话，这里必须是 true，否则部署完没入口。
+  "workers_dev": true,
   "preview_urls": false,
-  "routes": [{ "pattern": "tj518.de5.net", "custom_domain": true }],
 
   // ===========================================================================
-  // Smart Placement
+  // 自定义域名（可选）
   // ===========================================================================
   //
-  // 目的：把 Worker 执行位置从「离访问者最近」改为「离后端数据源最近」。
+  // 前提：该域名已托管在**你自己的** Cloudflare 账号下的 Zone 里。
+  // 如果只是想在 workers.dev 上跑，**保持注释即可**。
   //
-  // 为什么需要：出口落在欧洲/北美时，每次请求 139 网盘（机房在国内）都要
-  // 跨洲往返；一次播放要解析多层目录 → 8~13 秒。日志实测直链请求
-  // wall=32~35s，是播放超时/播放器报错的直接原因。
+  // ⚠️ 部署后再改域名时注意：旧 Worker 的 Route 会残留并抢占 Custom Domain，
+  //    表现为 `/api/*` 全部卡死、`wrangler tail` 一条日志都没有。
+  //    改域名前先删掉旧的 route（GET /zones/{zone}/workers/routes 拿 id 再 DELETE）。
   //
-  // ⚠️ 效果取决于 CF 对后端子请求的判定，需线上实测验证；
-  //    若无改善，删掉本段即可完全回滚。
-  "placement": { "mode": "smart" },
-
-  // 自定义域名绑定（需该域名已托管在本 CF 账号的 Zone 中）
-  
+  // "routes": [{ "pattern": "你的域名.com", "custom_domain": true }],
 
   // ===========================================================================
   // 定时触发器（Cron Triggers）
   // ===========================================================================
   //
-  // 用途：清理 139 CAS 播放产生的临时副本。
+  // 用途：清理 139 CAS 播放产生的临时副本（播完把副本送进回收站）。
   //
-  // 为什么必须配：CAS 播放会把真实文件"秒传"还原到云盘 TEMP 目录，
-  // 播完需要删除。但 Workers 上"播完自动删"不可靠 ——
-  // ctx.waitUntil 只保证约 30 秒（清理延迟却是 120 秒），且 isolate
-  // 随时会被回收；而在播放热路径上做清扫又会增加子请求、触发 503。
-  // 因此兜底清理只能靠这个定时任务（src/backend/worker.ts 的 scheduled）。
+  // 为什么必须配：CAS 播放会把真实文件"秒传"还原到云盘 TEMP 目录，播完需删。
+  // Workers 上"播完即删"不可靠 —— ctx.waitUntil 只保证约 30 秒，而清理延迟
+  // 是 120 秒，且 isolate 随时会被回收。所以兜底只能靠定时任务。
   //
-  // ⚠️ 不配置本项，scheduled handler 永不执行，TEMP 会持续堆积。
+  // ⚠️ 不配这一项，`scheduled()` 永不执行，TEMP 会持续堆积。
   //
-  // 频率选择：每 2 小时一次。太低会堆积，太高则浪费子请求配额
-  // （回收站本身也会自动清理，CF 侧只需定期把副本"送进回收站"）。
+  // 频率：每小时一次。太低会堆积，太高浪费子请求配额。
   "triggers": {
-    "crons": ["0 * * * *"]
+    "crons": ["0 * * * *"],
   },
 
-  // 存储绑定：KV（免费额度最大，最通用）。
+  // ===========================================================================
+  // 存储绑定（KV）
+  // ===========================================================================
   //
-  // ⚠️ 这里必须写线上真实在用的那个命名空间，否则会读到一个空 KV，
-  //    导致：配置丢失 + 139 路径索引读不到（每次都要逐层请求上游）。
-  //    后果是子请求配额被吃光，表现为 WebDAV/PROPFIND 间歇性 503、
-  //    第三方播放器报「WebDAV 地址错误」，而且刷新一下又能用（换了个边缘实例重试）。
+  // ★ 这里**故意保持注释** —— 你不需要填任何 id。
   //
-  // 历史坑：本文件曾写死 195ce3674611446c8217530bbbb0387d（opencas-tsworkers-kv，**空**），
-  //        而真实数据一直躺在 openlist-tsworkers-kv = fe69024aa86d4fb0bdfd4d312b8d59d7 里。
-  //        原因是 Worker 曾从 openlist-tsworkers 改名为 opencas-tsworkers，
-  //        wrangler 自动预配了一个新命名空间，老数据就被落下了。
-  "kv_namespaces": [
-    { "binding": "KV", "id": "fe69024aa86d4fb0bdfd4d312b8d59d7" }
-  ],
+  //   去掉注释并省略 id 后，wrangler 会自动"预配"：首次部署创建
+  //   `<worker名>-kv` 命名空间并绑定；再次部署通过服务端 inherit 复用。
+  //
+  //   为什么不在本模板里直接启用？因为 `id` 必须留空（写 "id": "" 会被
+  //   wrangler 校验拒绝：「should have a string id field」），而未填 id 的
+  //   配置在【已有 KV】的账号上可能被误判。**最稳妥的做法是留注释**，
+  //   让 wrangler 走自动预配，或者你手动填上自己在控制台建的 KV id。
+  //
+  // 二选一：
+  //   (a) 打开下面这行、删掉 id —— 交给 wrangler 自动创建（推荐新手）
+  //   (b) 自己在控制台建好 KV，把真实 id 填进来（推荐老手，可控）
+  //
+  // "kv_namespaces": [{ "binding": "KV" }],
+  //
+  // ⚠️ 重要：一旦启用，务必确认这里指向的 KV 与线上数据一致。
+  //    填错 id 会读到一个空 KV，表现为「配置全丢 + 139 路径索引失效
+  //    → 每次逐层请求上游 → 子请求配额耗尽 → WebDAV/PROPFIND 间歇 503」，
+  //    而且刷新一下又能用（换了边缘实例），极难排查。
 
   // ===========================================================================
   // 静态资源 + Worker 入口的优先级（**关键配置，缺了会出线上故障**）
@@ -89,24 +109,19 @@
   //
   // ## 为什么必须写 run_worker_first
   //
-  // 启用 `assets` 后，CF 的默认行为是：**先查静态资源，命中就直接返回，
-  // 不命中才交给 Worker**。再叠加 SPA 的 `index.html` 兜底（找不到的路径
-  // 返回 index.html），就会出现一个非常隐蔽的故障：
+  // 启用 `assets` 后，CF 默认行为是：**先查静态资源，命中就直接返回，
+  // 不命中才交给 Worker**。再叠加 SPA 的 index.html 兜底，会出现极隐蔽的故障：
   //
-  //   - `GET /`、`/robots.txt`、`/favicon.ico` → 正常（静态资源/兜底命中）
-  //   - `GET /api/public/settings`、`/api/fs/list`、`POST /api/auth/login`
-  //     → **完全无响应，客户端 20~95 秒后超时（http=000、ttfb=0）**
+  //   - `GET /`、`/robots.txt`、`/favicon.ico` → 正常（静态资源命中）
+  //   - `GET /api/public/settings`、`POST /api/auth/login`
+  //     → **完全无响应**，客户端 20~95 秒超时（http=000，ttfb=0）
   //
-  // 实测（2026-09-18 线上）：`curl` 连 TCP 都能建上（connect≈0.18s），但
-  // 响应头**永远不到达**；`wrangler tail` 里**一条日志都没有** —— 说明请求
-  // 根本没进 Worker。同时 HTTP 访问同一 URL 能拿到边缘返回的 400。
+  // 症状极具误导性：TCP 能连上（connect≈0.18s）但响应头永不到达；
+  // `wrangler tail` 里一条日志都没有（说明请求根本没进 Worker）；
+  // 回滚版本、清缓存、换 TLS 版本**全都无效**。
   //
-  // 排查误导性极强：看起来像"139 慢"、"CAS 播放卡"、"KV 挂起"，
-  // 而且回滚历史版本、清 CDN 缓存、换 TLS 版本**全都无效** ——
-  // 因为它压根不是代码问题，是请求没被路由到 Worker。
-  //
-  // 用 `run_worker_first` 把动态路径**显式交给 Worker 处理**，
-  // 静态资源（含 SPA 兜底）只服务剩余路径，两类请求互不干扰。
+  // 用 `run_worker_first` 把动态路径**显式交给 Worker**，静态资源只服务剩余
+  // 路径，两类请求互不干扰。**这一段请不要删。**
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
@@ -136,18 +151,18 @@
 
     // 数据库驱动：
     //   auto（默认）- 自动检测，顺序 mysql → d1 → kv → cfkv → blob → do
+    //   kv         - Cloudflare KV binding（需上方 kv_namespaces）
+    //   d1         - Cloudflare D1（需下方 d1_databases）
+    //   do         - Cloudflare Durable Objects
     //   blob       - 腾讯云 EdgeOne Blob / 阿里云 ESA Blob
     //   cfkv       - Cloudflare KV REST API（需 CF_ACCOUNT / CF_KV_UUID / CF_API_KEY）
-    //   kv         - Cloudflare KV binding（需下方 kv_namespaces）
-    //   d1         - Cloudflare D1（需下方 d1_databases）
-    //   do         - Cloudflare Durable Objects（需下方 durable_objects）
-    //   mysql      - 外部 MySQL（需 MYSQL_URLS 或 MYSQL_HOST 等，仅 Node 运行时）
-    // 说明：mysql 仅在配置了连接信息时才参与 auto 探测，避免无谓的 TCP 建连。
+    //   mysql      - 外部 MySQL（仅 Node 运行时）
     "DB_DRIVER": "auto",
 
-    // ── 安全鉴权（推荐以 Secret 类型配置，见 .dev.vars.example）──────────
+    // ── 安全鉴权（**务必改用 Secret 配置**，见 .dev.vars.example）─────────
     //
     // JWT 签名密钥（>=16 字符，兼作字段加密与定时任务鉴权）
+    // 本地调试可填这里，**生产环境请用 `wrangler secret put JWT_SECRET`**
     // "JWT_SECRET": "",
     //
     // 跳过安装向导，自动以该密码初始化 admin
@@ -155,85 +170,5 @@
     //
     // CORS 白名单（逗号分隔，不设则仅同源）
     // "ALLOW_URLS": "https://yourdomain.com",
-
-    // ── 可选参数 ──────────────────────────────────────────────────────────
-    //
-    // 单次整体上传（/put、/form）大小上限，单位字节。默认 26214400（25MB）
-    // "MAX_UPLOAD": "26214400",
-    //
-    // 分片上传单片大小上限，单位字节。默认 16777216（16MB）
-    // "MAX_UPPART": "16777216",
-    //
-    // 前端静态资源 CDN 地址，支持 $version 占位符
-    // "ASSET_URLS": "https://example.com/dist",
-    //
-    // 允许作为种子数据来源的主机白名单，逗号/空格分隔
-    // "ALLOW_SEED": "",
-
-    // ── Cloudflare KV REST API（DB_DRIVER=cfkv 时三项需全部填写）───────────
-    //
-    // KV namespace ID
-    // "CF_KV_UUID": "",
-    //
-    // 账户 ID
-    // "CF_ACCOUNT": "",
-    //
-    // 具有 KV 读写权限的 API Token
-    // "CF_API_KEY": "",
-
-    // ── EdgeOne Node 云函数 KV 代理（DB_DRIVER=kv 时可选）──────────────────
-    //
-    // EdgeOne 的 KV 绑定只注入 Edge Functions，不会注入 Node 云函数。
-    // 运行在 EdgeOne Node 云函数时，必须经同部署的 Edge Functions 代理访问 KV。
-    // 此处填部署 origin，如 https://your-project.edgeone.app
-    // 留空则自动使用当前请求 origin（同一部署自调用）；跨域或本地调试才需显式设置。
-    // "EO_KV_URLS": "",
-
-    // ── MySQL（DB_DRIVER=mysql 时，方式一 / 方式二 二选一）─────────────────
-    //
-    // 方式一：连接串
-    // "MYSQL_URLS": "mysql://user:pass@host:3306/db",
-    //
-    // 方式二：分项配置
-    // "MYSQL_HOST": "127.0.0.1",
-    // "MYSQL_PORT": "3306",
-    // "MYSQL_USER": "root",
-    // "MYSQL_PASS": "",
-    // "MYSQL_NAME": "openlist",
   },
-
-  // ===========================================================================
-  // 存储绑定
-  // ===========================================================================
-  //
-  // ▶ 方案 A：KV（默认启用，免费额度大、最通用）
-  //   ⚠️ 必须【完全省略 id 字段】，不能写成 "id": ""：
-  //      wrangler 配置校验会拒绝空字符串 id（"should have a string id field"）。
-  //   省略 id 后：首次部署由 wrangler 自动创建 openlist-tsworkers-kv 并绑定；
-  //   二次部署通过 inherit 复用已有绑定，不会重复创建。
-  //   若想改用账户里已有的 KV，把该命名空间的 id 填进来即可。
-  //
-  //  "kv_namespaces": [{ "binding": "KV" }],
-  //
-  // ▶ 方案 B：D1（关系型，可与 Go 后端共享库；DB_FORMAT 建议改为 "sql"）
-  //   控制台：Workers & Pages → D1 → 创建数据库 → 绑定到 Worker，变量名填 DB
-  //   省略 database_id 时，wrangler >= 4.45.0 会自动创建同名库并回写
-  //
-  // "d1_databases": [
-  //   { "binding": "DB", "database_name": "openlist", "database_id": "" }
-  // ],
-  //
-  // ▶ 方案 C：Durable Objects（内置 SQLite，强一致；DB_FORMAT 建议改为 "sql"）
-  //   注意：DO 需要 migrations，且删除成本高，适合单租户部署。
-  //
-  // "durable_objects": {
-  //   "bindings": [{ "name": "DO", "class_name": "OpenListDB" }]
-  // },
-  // "migrations": [
-  //   { "tag": "v1", "new_sqlite_classes": ["OpenListDB"] }
-  // ],
-  //
-  // ▶ 方案 D：Blob / MySQL
-  //   Blob 由 EdgeOne / ESA 自动注入，无需配置；
-  //   MySQL 通过 Secret 配置 MYSQL_URLS（或 MYSQL_HOST 等分项）。
 }

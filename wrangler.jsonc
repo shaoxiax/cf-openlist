@@ -23,7 +23,7 @@
 // 用户填入的值会成为该 Worker 的 Secret，后续更新不会被覆盖。
 // =============================================================================
 {
-  "name": "opencas-tsworkers",
+  "name": "cf-openlist",
   "main": "src/backend/worker.ts",
   "compatibility_date": "2026-08-04",
   "compatibility_flags": ["nodejs_compat"],
@@ -65,7 +65,7 @@
   // 频率选择：每 2 小时一次。太低会堆积，太高则浪费子请求配额
   // （回收站本身也会自动清理，CF 侧只需定期把副本"送进回收站"）。
   "triggers": {
-    "crons": ["0 * * * *"],
+    "crons": ["0 * * * *"]
   },
 
   // 存储绑定：KV（免费额度最大，最通用）。
@@ -80,7 +80,7 @@
   //        原因是 Worker 曾从 openlist-tsworkers 改名为 opencas-tsworkers，
   //        wrangler 自动预配了一个新命名空间，老数据就被落下了。
   "kv_namespaces": [
-    { "binding": "KV", "id": "fe69024aa86d4fb0bdfd4d312b8d59d7" },
+    { "binding": "KV", "id": "fe69024aa86d4fb0bdfd4d312b8d59d7" }
   ],
 
   // ===========================================================================
